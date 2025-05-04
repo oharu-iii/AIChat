@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-void main() => runApp(const ProviderScope(child: MyApp()));
+
+Future<void> main() async {
+  await dotenv.load();
+  runApp(const ProviderScope(child: MyApp()));
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -46,6 +53,7 @@ class ChatPage extends ConsumerStatefulWidget {
 class _ChatPageState extends ConsumerState<ChatPage> {
   final ScrollController _scrollController = ScrollController();
   final TextEditingController _textController = TextEditingController();
+  String summaryText = "";
 
   @override
   void dispose() {
@@ -69,7 +77,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
-    final messages = ref.watch(chatProvider);
+    final chatHistory = ref.watch(chatProvider);
 
     // メッセージ追加時にスクロール（messagesが更新されるたび）
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
@@ -88,9 +96,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
-                itemCount: messages.length,
+                itemCount: chatHistory.length,
                 itemBuilder: (context, idx) {
-                  final msg = messages[idx];
+                  final msg = chatHistory[idx];
                   return ListTile(
                     title: Align(
                       alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -121,14 +129,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   IconButton(
                     icon: const Icon(Icons.send),
                     onPressed: () async {
-                      final text = _textController.text.trim();
-                      if (text.isEmpty) return;
-                      ref.read(chatProvider.notifier).addUserMessage(text);
+                      final userMessage = _textController.text.trim();
+                      if (userMessage.isEmpty) return;
+                      ref.read(chatProvider.notifier).addUserMessage(userMessage);
                       _textController.clear();
 
+                      // 5回おきにサマリーアップデート
+                      if (chatHistory.length % 5 == 0 && chatHistory.isNotEmpty) {
+                        summaryText = await updateSummary(chatHistory);
+                      }
+
                       // Bot返事
-                      final response = await fetchBotResponse(text, messages);
-                      ref.read(chatProvider.notifier).addBotMessage(response ?? '…');
+                      final aiResponse = await fetchBotResponse(userMessage, chatHistory, summaryText);
+                      // final response = await fetchBotResponse(userMessage, chatHistory);
+                      ref.read(chatProvider.notifier).addBotMessage(aiResponse ?? '…');
                     },
                   ),
                 ],
@@ -140,12 +154,112 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
   }
 
-  // TODO:後で本物のAPIを組む
-  Future<String?> fetchBotResponse(String userMessage, List<ChatMessage> history) async {
-    // モック返事
-    await Future.delayed(const Duration(seconds: 1));
-    // 最初はモック値で
-    return '（雑談風に）すごいですね！ それで、どうなったんですか？';
-    // 本番はAPIを後で実装
+  /// OpenAI APIを使ってAIの返答を取得する関数
+  Future<String?> fetchBotResponse(String userMessage, List<ChatMessage> history, String summaryText) async {
+
+    print("FetchBotResponse\n");
+
+    final apiKey = dotenv.env['OPENAI_API_KEY'];
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    // --- プロンプト＆履歴作成 ---
+    List<Map<String, String>> messages = [
+      {
+        "role": "system",
+        "content":
+            "あなたは聞き上手な友達AIです。相槌や質問を適度に交えながら、自然な雑談をしてください。また、過去の重要事項のまとめが下記にあります。これも参考にしつつ雑談してください。\n\n【ユーザーの重要情報】\n$summaryText\n\n---\n\n【会話履歴 (あなたは role:assistant です)】\n"
+      }
+    ];
+
+    // 直近10ターンだけhistoryから追加
+    final historyTail = history.length > 10 ? history.sublist(history.length - 10) : history;
+    for (var msg in historyTail) {
+      messages.add({
+        "role": msg.isUser ? "user" : "assistant",
+        "content": msg.message,
+      });
+    }
+
+    // 今回のユーザー発話
+    messages.add({
+      "role": "user",
+      "content": userMessage,
+    });
+
+    print("Messages: $messages");
+
+    final response = await http.post(
+      Uri.parse(endpoint),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $apiKey",
+      },
+      body: jsonEncode({
+        "model": "gpt-3.5-turbo",
+        "messages": messages,
+        "max_tokens": 1000,
+        "temperature": 0.8,
+        "top_p": 1.0,
+      }),
+    );
+
+    // ステータスチェック
+    if (response.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      print("AI Response: ${data['choices'][0]['message']['content']}");
+      return data['choices'][0]['message']['content'];
+    } else {
+      print("API Error: ${response.statusCode}, ${utf8.decode(response.bodyBytes)}");
+      return "（エラー: AI返答を取得できませんでした）";
+    }
+  }
+  
+  Future<String> updateSummary(List<ChatMessage> allHistory) async {
+
+    print("UpdateSummary\n");
+
+    final apiKey = dotenv.env['OPENAI_API_KEY'];
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    // 1. 過去全ての会話履歴を "user"/"assistant" で投げる
+    final summaryPrompt = [
+      {
+        "role": "system",
+        "content": "次の会話ログから、ユーザーが大事そうに話した内容・よく出る趣味・自己紹介・特徴・好きな話題などを日本語で要約してください。\n---\n【会話履歴】\n\n"
+      }
+    ];
+
+    for (var msg in allHistory) {
+      summaryPrompt.add({
+        "role": msg.isUser ? "user" : "assistant",
+        "content": msg.message,
+      });
+    }
+
+    print("SummaryPrompt: $summaryPrompt");
+
+    final response = await http.post(
+      Uri.parse(endpoint),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $apiKey",
+      },
+      body: jsonEncode({
+        "model": "gpt-3.5-turbo",
+        "messages": summaryPrompt,
+        "max_tokens": 1000,
+        "temperature": 0.3,
+        "top_p": 1.0,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      print("Summary API response: ${data['choices'][0]['message']['content']}");
+      return data['choices'][0]['message']['content'].trim();
+    } else {
+      print("Summary API error: ${response.statusCode}, ${response.body}");
+      return "";
+    }
   }
 }
