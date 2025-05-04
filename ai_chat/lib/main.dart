@@ -36,13 +36,43 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
   }
 }
 
-class ChatPage extends ConsumerWidget {
-  ChatPage({super.key});
-  final _controller = TextEditingController();
+class ChatPage extends ConsumerStatefulWidget {
+  const ChatPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ChatPage> createState() => _ChatPageState();
+}
+
+class _ChatPageState extends ConsumerState<ChatPage> {
+  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _textController = TextEditingController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    // WidgetsBindingで確実に反映
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final messages = ref.watch(chatProvider);
+
+    // メッセージ追加時にスクロール（messagesが更新されるたび）
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
     return Scaffold(
       body: SafeArea(
@@ -57,6 +87,7 @@ class ChatPage extends ConsumerWidget {
             ),
             Expanded(
               child: ListView.builder(
+                controller: _scrollController,
                 itemCount: messages.length,
                 itemBuilder: (context, idx) {
                   final msg = messages[idx];
@@ -83,29 +114,29 @@ class ChatPage extends ConsumerWidget {
                 children: [
                   Expanded(
                     child: TextField(
-                      controller: _controller,
+                      controller: _textController,
                       decoration: const InputDecoration(hintText: '話しかけてみよう'),
                     ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.send),
                     onPressed: () async {
-                      final text = _controller.text.trim();
+                      final text = _textController.text.trim();
                       if (text.isEmpty) return;
                       ref.read(chatProvider.notifier).addUserMessage(text);
-                      _controller.clear();
+                      _textController.clear();
 
-                      // ここでAIにAPI投げて返事をもらう
+                      // Bot返事
                       final response = await fetchBotResponse(text, messages);
                       ref.read(chatProvider.notifier).addBotMessage(response ?? '…');
                     },
                   ),
                 ],
               ),
-            )
+            ),
           ],
         ),
-      )
+      ),
     );
   }
 
