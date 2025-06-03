@@ -3,10 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-
+import 'logger.dart';
 
 Future<void> main() async {
   await dotenv.load();
+  await Logger.initialize();
+  Logger.setLogLevel(LogLevel.debug); // DEBUGレベルに設定
+  await Logger.debug('アプリケーション起動');
   runApp(const ProviderScope(child: MyApp()));
 }
 
@@ -158,8 +161,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   /// OpenAI APIを使ってAIの返答を取得する関数
   Future<String?> fetchBotResponse(String userMessage, List<ChatMessage> history, String summaryText) async {
-
-    print("FetchBotResponse\n");
+    await Logger.info("FetchBotResponse開始");
 
     final apiKey = dotenv.env['OPENAI_API_KEY'];
     const endpoint = 'https://api.openai.com/v1/chat/completions';
@@ -211,7 +213,7 @@ $summaryText
       "content": userMessage,
     });
 
-    print("Messages: $messages");
+    await Logger.debug("送信メッセージ: ${jsonEncode(messages)}");
 
     final response = await http.post(
       Uri.parse(endpoint),
@@ -231,17 +233,17 @@ $summaryText
     // ステータスチェック
     if (response.statusCode == 200) {
       final data = jsonDecode(utf8.decode(response.bodyBytes));
-      print("AI Response: ${data['choices'][0]['message']['content']}");
+      await Logger.info("AI応答: ${data['choices'][0]['message']['content']}");
       return data['choices'][0]['message']['content'];
     } else {
-      print("API Error: ${response.statusCode}, ${utf8.decode(response.bodyBytes)}");
+      final errorMessage = "APIエラー: ${response.statusCode}, ${utf8.decode(response.bodyBytes)}";
+      await Logger.error(errorMessage);
       return "（エラー: AI返答を取得できませんでした）";
     }
   }
   
   Future<String> updateSummary(List<ChatMessage> allHistory) async {
-
-    print("UpdateSummary\n");
+    await Logger.info("要約更新開始");
 
     final apiKey = dotenv.env['OPENAI_API_KEY'];
     const endpoint = 'https://api.openai.com/v1/chat/completions';
@@ -291,7 +293,7 @@ $summaryText
       });
     }
 
-    print("SummaryPrompt: $summaryPrompt");
+    await Logger.debug("要約プロンプト: ${jsonEncode(summaryPrompt)}");
 
     final response = await http.post(
       Uri.parse(endpoint),
@@ -310,10 +312,12 @@ $summaryText
 
     if (response.statusCode == 200) {
       final data = jsonDecode(utf8.decode(response.bodyBytes));
-      print("Summary API response: ${data['choices'][0]['message']['content']}");
-      return data['choices'][0]['message']['content'].trim();
+      final summary = data['choices'][0]['message']['content'].trim();
+      await Logger.info("要約結果: $summary");
+      return summary;
     } else {
-      print("Summary API error: ${response.statusCode}, ${response.body}");
+      final errorMessage = "要約APIエラー: ${response.statusCode}, ${response.body}";
+      await Logger.error(errorMessage);
       return "";
     }
   }
