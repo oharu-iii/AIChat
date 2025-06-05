@@ -1,122 +1,352 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'logger.dart';
 
-void main() {
-  runApp(const MyApp());
+Future<void> main() async {
+  await dotenv.load();
+  await Logger.initialize();
+  Logger.setLogLevel(LogLevel.debug); // DEBUGレベルに設定
+  await Logger.debug('アプリケーション起動');
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      title: 'AI Chat',
+      home: ChatPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class ChatMessage {
+  final String message;
+  final bool isUser;
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  ChatMessage({required this.message, required this.isUser});
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+// Riverpod 用の履歴状態
+final chatProvider = StateNotifierProvider<ChatNotifier, List<ChatMessage>>((ref) => ChatNotifier());
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+class ChatNotifier extends StateNotifier<List<ChatMessage>> {
+  ChatNotifier() : super([]);
+
+  void addUserMessage(String msg) {
+    state = [...state, ChatMessage(message: msg, isUser: true)];
+  }
+
+  void addBotMessage(String msg) {
+    state = [...state, ChatMessage(message: msg, isUser: false)];
+  }
+}
+
+class ChatPage extends ConsumerStatefulWidget {
+  const ChatPage({super.key});
+
+  @override
+  ConsumerState<ChatPage> createState() => _ChatPageState();
+}
+
+class _ChatPageState extends ConsumerState<ChatPage> {
+  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _textController = TextEditingController();
+  String summaryText = "";
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _textController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    // WidgetsBindingで確実に反映
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final chatHistory = ref.watch(chatProvider);
+
+    // メッセージ追加時にスクロール（messagesが更新されるたび）
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: SafeArea(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+          children: [
+            Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                '雑談AI Bot デモ',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                controller: _scrollController,
+                itemCount: chatHistory.length,
+                itemBuilder: (context, idx) {
+                  final msg = chatHistory[idx];
+                  return ListTile(
+                    title: Align(
+                      alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        decoration: BoxDecoration(
+                          color: msg.isUser ? Colors.blue[100] : Colors.grey[200],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(msg.message),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _textController,
+                      decoration: const InputDecoration(hintText: '話しかけてみよう'),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.send),
+                    onPressed: () async {
+                      final userMessage = _textController.text.trim();
+                      if (userMessage.isEmpty) return;
+                      ref.read(chatProvider.notifier).addUserMessage(userMessage);
+                      _textController.clear();
+
+                      // 要約更新の条件を改善
+                      if ((chatHistory.length % 5 == 0 && chatHistory.isNotEmpty) || 
+                          userMessage.contains("って呼んで") || 
+                          userMessage.contains("と呼んで")) {
+                        summaryText = await updateSummary(chatHistory);
+                      }
+
+                      // Bot返事
+                      final aiResponse = await fetchBotResponse(userMessage, chatHistory, summaryText);
+                      // final response = await fetchBotResponse(userMessage, chatHistory);
+                      ref.read(chatProvider.notifier).addBotMessage(aiResponse ?? '…');
+                    },
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
+  }
+
+  /// OpenAI APIを使ってAIの返答を取得する関数
+  Future<String?> fetchBotResponse(String userMessage, List<ChatMessage> history, String summaryText) async {
+    await Logger.info("FetchBotResponse開始");
+
+    final apiKey = dotenv.env['OPENAI_API_KEY'];
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    // --- プロンプト＆履歴作成 ---
+    List<Map<String, String>> messages = [
+      {
+        "role": "system",
+        "content":
+            """あなたは親しい友達のAIアシスタントです。以下の指示に従って会話を行ってください：
+
+1. 性格設定：
+- 明るく親しみやすい性格
+- ユーザーの言葉に共感的
+- 相手の興味や関心を積極的に引き出す
+
+2. 会話ルール：
+- ユーザーが指定した呼び方を必ず守り、会話全体で一貫して使用する
+- ユーザーが指定した呼び方がない場合は、呼び方を尋ねる
+- 過去の会話で得た情報（趣味、好み、呼び方など）を積極的に参照する
+- 相槌や質問を自然に織り交ぜる
+- 一方的な説明を避け、対話を心がける
+- 「ありがとう」などの感謝の言葉に対しては、会話を終了せずに継続する姿勢を示す
+- ユーザーが明示的に会話を終了したい意思を示さない限り、会話を継続する
+
+3. 重要情報の取り扱い：
+【ユーザーの重要情報】
+$summaryText
+
+この情報を常に意識し、会話に自然に組み込んでください。特に、ユーザーの希望する呼び方や、共有された個人的な情報は必ず記憶し、活用してください。
+
+---
+【会話履歴】"""
+      }
+    ];
+
+    // 直近10ターンだけhistoryから追加
+    final historyTail = history.length > 10 ? history.sublist(history.length - 10) : history;
+    for (var msg in historyTail) {
+      messages.add({
+        "role": msg.isUser ? "user" : "assistant",
+        "content": msg.message,
+      });
+    }
+
+    // 今回のユーザー発話
+    messages.add({
+      "role": "user",
+      "content": userMessage,
+    });
+
+    await Logger.debug("送信メッセージ: ${jsonEncode(messages)}");
+
+    final response = await http.post(
+      Uri.parse(endpoint),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $apiKey",
+      },
+      body: jsonEncode({
+        "model": "gpt-3.5-turbo",
+        "messages": messages,
+        "max_tokens": 1000,
+        "temperature": 0.8,
+        "top_p": 1.0,
+      }),
+    );
+
+    // ステータスチェック
+    if (response.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      await Logger.info("AI応答: ${data['choices'][0]['message']['content']}");
+      return data['choices'][0]['message']['content'];
+    } else {
+      final errorMessage = "APIエラー: ${response.statusCode}, ${utf8.decode(response.bodyBytes)}";
+      await Logger.error(errorMessage);
+      return "（エラー: AI返答を取得できませんでした）";
+    }
+  }
+  
+  Future<String> updateSummary(List<ChatMessage> allHistory) async {
+    await Logger.info("要約更新開始");
+
+    final apiKey = dotenv.env['OPENAI_API_KEY'];
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    // 1. 過去全ての会話履歴を "user"/"assistant" で投げる
+    final summaryPrompt = [
+      {
+        "role": "system",
+        "content": """以下の会話ログから、確実に言及のあった情報のみを抽出してください。
+
+重要な注意事項：
+- 推測や解釈は一切行わないでください
+- 明確に発言された情報のみを記録してください
+- 情報が少ない場合でも、一つでも明確な言及があれば必ず記録してください
+- 不確かな情報には必ず「（要確認）」と付記してください
+
+記録する項目：
+1. 個人情報（明確に言及があった場合のみ）
+- ユーザーの希望する呼び方・ニックネーム
+- 年齢層や性別
+- 職業や学業に関する情報
+
+2. 明確に言及のあった事実情報
+- 趣味や好きな活動
+- 具体的な経験や出来事
+- 明確な好み
+
+3. 直近の会話で示された意向
+- 明確に表明された要望
+- 具体的な予定や目標
+
+出力形式：
+「現在の会話履歴から抽出された確実な情報：
+
+[カテゴリ1] 個人情報
+・[具体的な情報]
+・[具体的な情報]（要確認）
+
+[カテゴリ2] 事実情報
+・[具体的な情報]
+・[具体的な情報]
+
+[カテゴリ3] 意向・要望
+・[具体的な情報]
+・[具体的な情報]」
+
+情報が少ない場合の出力例：
+「現在の会話履歴から抽出された確実な情報：
+
+[個人情報]
+・「たけちゃん」と呼んでほしい
+・学生（要確認）
+
+[事実情報]
+・たけのこの天ぷらを作った
+・料理は初めて（要確認）
+
+[意向・要望]
+・情報なし」
+
+注意：どうしても確実な情報が一つも得られない場合のみ、以下のように記載：
+「現在の会話履歴からは、確実な情報を十分に得られていません。」
+
+---
+【会話履歴】
+
+"""
+      }
+    ];
+
+    for (var msg in allHistory) {
+      summaryPrompt.add({
+        "role": msg.isUser ? "user" : "assistant",
+        "content": msg.message,
+      });
+    }
+
+    await Logger.debug("要約プロンプト: ${jsonEncode(summaryPrompt)}");
+
+    final response = await http.post(
+      Uri.parse(endpoint),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $apiKey",
+      },
+      body: jsonEncode({
+        "model": "gpt-3.5-turbo",
+        "messages": summaryPrompt,
+        "max_tokens": 1000,
+        "temperature": 0.3,
+        "top_p": 1.0,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final summary = data['choices'][0]['message']['content'].trim();
+      await Logger.info("要約結果: $summary");
+      return summary;
+    } else {
+      final errorMessage = "要約APIエラー: ${response.statusCode}, ${response.body}";
+      await Logger.error(errorMessage);
+      return "";
+    }
   }
 }
